@@ -28,11 +28,13 @@
   .sum-row small { color:var(--muted); font-size:.8rem; }
   .sum-row strong { font-size:1.3rem; font-variant-numeric:tabular-nums; }
   #sumNote { font-size:.75rem; color:var(--muted); margin:8px 0 0; min-height:1em; }
-  form { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; display:grid; gap:18px; }
-  .field { display:grid; gap:6px; }
+  form { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; display:grid; grid-template-columns:minmax(0,1fr); gap:18px; }
+  .field { display:grid; gap:6px; min-width:0; }
   .field > span, legend { font-size:.9rem; font-weight:600; }
   fieldset { border:0; padding:0; margin:0; display:grid; gap:8px; }
   input, select, textarea { font:inherit; width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--fg); }
+  input[type="date"] { -webkit-appearance:none; appearance:none; display:block; min-width:0; max-width:100%; min-height:2.8rem; text-align:left; }
+  input[type="date"]::-webkit-date-and-time-value { text-align:left; }
   input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
   .chips { display:flex; flex-wrap:wrap; gap:8px; }
   .chip { font:inherit; padding:8px 14px; border:1px solid var(--line); border-radius:999px; background:var(--chip); color:var(--fg); cursor:pointer; }
@@ -99,7 +101,7 @@
   </form>
   <p id="status" role="status" aria-live="polite"></p>
   <div class="pending-row"><span id="pending"></span><button type="button" class="btn sub" id="flushNow" hidden>今すぐ送信</button><button type="button" class="btn sub" id="clearQueue" hidden>未送信を削除</button></div>
-  <p class="ver">app v6</p>
+  <p class="ver">app v7</p>
 </main>
 
 <script>
@@ -166,15 +168,29 @@ function showPending() {
 }
 let lastError = "";
 async function postRows(rows, keepalive = false) {
-  lastError = "";
-  try {
-    // Content-Type を指定しない（text/plain）ことで CORS プリフライトを避ける
-    const res = await fetch(GAS_URL, { method: "POST", keepalive, body: JSON.stringify({ secret: SECRET, rows }) });
-    const json = await res.json();
-    if (json.ok === true) return true;
-    lastError = json.error === "unauthorized" ? "SECRETがGAS側と一致しません" : String(json.error || "不明なエラー");
-  } catch {
-    lastError = "通信できないか、GASが想定外の応答を返しました（GASの更新・再デプロイとGAS_URLを確認してください）";
+  // 通信の一時的な失敗に備え、1.5秒待って1回だけ再試行する（アプリを閉じるときは再試行しない）。
+  // 再試行しても、行のIDでGAS側が重複を弾くので二重登録にはならない。
+  const attempts = keepalive ? 1 : 2;
+  for (let i = 0; i < attempts; i++) {
+    lastError = "";
+    let res = null;
+    try {
+      // Content-Type を指定しない（text/plain）ことで CORS プリフライトを避ける
+      res = await fetch(GAS_URL, { method: "POST", keepalive, body: JSON.stringify({ secret: SECRET, rows }) });
+    } catch (e) {
+      lastError = `通信に失敗しました（${e.message || e.name}）`;
+    }
+    if (res) {
+      try {
+        const json = await res.json();
+        if (json.ok === true) return true;
+        lastError = json.error === "unauthorized" ? "SECRETがGAS側と一致しません" : String(json.error || "不明なエラー");
+        return false; // GASが返した明確なエラーは再試行しない
+      } catch {
+        lastError = `GASの応答を読み取れませんでした（HTTP ${res.status}）`;
+      }
+    }
+    if (i < attempts - 1) await new Promise(r => setTimeout(r, 1500));
   }
   return false;
 }
