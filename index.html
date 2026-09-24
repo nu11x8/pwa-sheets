@@ -101,7 +101,7 @@
   </form>
   <p id="status" role="status" aria-live="polite"></p>
   <div class="pending-row"><span id="pending"></span><button type="button" class="btn sub" id="flushNow" hidden>今すぐ送信</button><button type="button" class="btn sub" id="clearQueue" hidden>未送信を削除</button></div>
-  <p class="ver">app v7</p>
+  <p class="ver">app v8</p>
 </main>
 
 <script>
@@ -261,7 +261,7 @@ $("form").addEventListener("submit", e => {
   };
   saveQueue([...loadQueue(), row]);
   $("amount").value = ""; $("memo").value = ""; selected = null;
-  $("category").selectedIndex = 0; $("date").value = today();
+  $("category").selectedIndex = 0; // 日付は変更しない（続けて同じ日付で入力できる）
   setStatus("保存しました");
   renderStores(); showPending(); renderSummary();
   if (loadQueue().length >= BATCH_SIZE) flushQueue();
