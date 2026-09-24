@@ -108,7 +108,7 @@ const SECRET  = "change-me";                                         // Code.gs 
 // ▲ ここまで ▲
 
 const QUEUE_KEY = "pending-rows", STORE_KEY = "stores", SUM_KEY = "summary-cache";
-const DEFAULT_STORES = ["イオン", "ライフ", "セブン-イレブン", "ローソン", "Amazon"];
+const DEFAULT_STORES = ["ロピア","業務スーパー","アプロ","OK","関西スーパー"];
 const $ = id => document.getElementById(id);
 
 const read = (k, fallback) => { try { const v = JSON.parse(localStorage.getItem(k)); return v ?? fallback; } catch { return fallback; } };
