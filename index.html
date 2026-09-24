@@ -50,7 +50,9 @@
   .submit { padding:14px; font-size:1rem; }
   #status { min-height:1.5em; margin:12px 2px 0; font-size:.9rem; color:var(--accent); }
   #status.err { color:var(--err); }
-  #pending { font-size:.85rem; margin:4px 2px; color:var(--muted); }
+  .pending-row { display:flex; align-items:center; gap:10px; min-height:2.4em; margin:4px 2px; font-size:.85rem; color:var(--muted); }
+  .pending-row .btn { padding:6px 12px; font-size:.85rem; }
+  .ver { font-size:.7rem; color:var(--muted); margin:16px 2px 0; }
 </style>
 </head>
 <body>
@@ -96,7 +98,8 @@
     <button type="submit" class="btn submit" id="submit">送信</button>
   </form>
   <p id="status" role="status" aria-live="polite"></p>
-  <p id="pending"></p>
+  <div class="pending-row"><span id="pending"></span><button type="button" class="btn sub" id="flushNow" hidden>今すぐ送信</button></div>
+  <p class="ver">app v3</p>
 </main>
 
 <script>
@@ -147,31 +150,29 @@ $("addCancel").onclick = closeAdd;
 $("newStore").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); commitStore(); } });
 $("amount").addEventListener("input", e => { e.target.value = e.target.value.replace(/[^0-9]/g, ""); });
 
-/* ---------- 送信キュー ---------- */
+/* ---------- 送信キュー（端末に保存 → まとめて送信） ---------- */
+// 入力は即座に端末へ保存する。シートへの送信は、次のいずれかのときにまとめて行う:
+//  ・未送信が BATCH_SIZE 件たまったとき
+//  ・アプリを閉じる／別のアプリに切り替えたとき
+//  ・「今すぐ送信」を押したとき
+const BATCH_SIZE = 5;
 const loadQueue = () => read(QUEUE_KEY, []);
 const saveQueue = q => write(QUEUE_KEY, q);
 function showPending() {
   const n = loadQueue().length;
-  $("pending").textContent = n ? `未送信: ${n}件（オンライン時に自動で再送します）` : "";
+  $("pending").textContent = n ? `端末に保存中: ${n}件（未送信）` : "";
+  $("flushNow").hidden = !n;
 }
-async function postRow(row) {
+async function postRows(rows) {
   try {
     // Content-Type を指定しない（text/plain）ことで CORS プリフライトを避ける
-    const res = await fetch(GAS_URL, { method: "POST", body: JSON.stringify({ secret: SECRET, row }) });
+    const res = await fetch(GAS_URL, { method: "POST", keepalive: true, body: JSON.stringify({ secret: SECRET, rows }) });
     return (await res.json()).ok === true;
   } catch { return false; }
 }
-async function flushQueue() {
-  const q = loadQueue();
-  if (!q.length || !navigator.onLine) return;
-  const rest = [];
-  for (const row of q) if (!(await postRow(row))) rest.push(row);
-  saveQueue(rest); showPending();
-  if (rest.length < q.length) { setStatus(`${q.length - rest.length}件の未送信データを送信しました`); await fetchSummary(); }
-}
 
 /* ---------- 今月の合計 ---------- */
-let serverTotals = null; // {month, totals:{食費, 外食}}
+let serverTotals = null; // {month, totals:{食費, 外食}} シート上の合計（未送信分を含まない）
 const monthOf = () => ($("date").value || today()).slice(0, 7);
 
 function renderSummary() {
@@ -194,33 +195,65 @@ async function fetchSummary() {
   } catch {}
   renderSummary();
 }
+// 送信済みになった行を、シート側の合計に加える（再取得までの見た目のずれ防止）
+function addToServerTotals(rows) {
+  if (!serverTotals) return;
+  rows.forEach(r => {
+    if (r.date.slice(0, 7) === serverTotals.month && r.category in serverTotals.totals) serverTotals.totals[r.category] += r.amount;
+  });
+  write(SUM_KEY, serverTotals);
+}
 
-/* ---------- 送信 ---------- */
-$("form").addEventListener("submit", async e => {
+let flushing = false;
+async function flushQueue(manual = false) {
+  if (flushing || !navigator.onLine) return;
+  const q = loadQueue();
+  if (!q.length) return;
+  flushing = true;
+  if (manual) setStatus("送信中…");
+  let sent = 0;
+  for (let i = 0; i < q.length; i += 50) {
+    const chunk = q.slice(i, i + 50);
+    if (!(await postRows(chunk))) break;
+    const ids = new Set(chunk.map(r => r.id));
+    saveQueue(loadQueue().filter(r => !ids.has(r.id)));
+    addToServerTotals(chunk);
+    sent += chunk.length;
+  }
+  flushing = false;
+  showPending(); renderSummary();
+  if (sent) { setStatus(`${sent}件をシートに送信しました`); fetchSummary(); }
+  else if (manual) setStatus("送信できませんでした。あとで再送します", true);
+}
+
+/* ---------- 入力 ---------- */
+$("form").addEventListener("submit", e => {
   e.preventDefault();
   if (!$("amount").value) { setStatus("金額を入力してください", true); $("amount").focus(); return; }
   const row = {
+    id: (crypto.randomUUID ? crypto.randomUUID() : Date.now() + "-" + Math.random().toString(36).slice(2)),
     sentAt: new Date().toISOString(), date: $("date").value || today(), category: $("category").value,
     store: selected || "", amount: Number($("amount").value), memo: $("memo").value
   };
-  $("submit").disabled = true; setStatus("送信中…");
-  const ok = navigator.onLine && await postRow(row);
-  if (ok) setStatus("送信しました");
-  else { saveQueue([...loadQueue(), row]); setStatus("送信できなかったため端末に保存しました。通信が戻ると再送します", true); }
+  saveQueue([...loadQueue(), row]);
   $("amount").value = ""; $("memo").value = ""; selected = null;
   $("category").selectedIndex = 0; $("date").value = today();
-  renderStores(); showPending();
-  await fetchSummary();
-  $("submit").disabled = false;
+  setStatus("保存しました");
+  renderStores(); showPending(); renderSummary();
+  if (loadQueue().length >= BATCH_SIZE) flushQueue();
 });
 
+$("flushNow").onclick = () => flushQueue(true);
 $("date").addEventListener("change", fetchSummary);
-window.addEventListener("online", async () => { await flushQueue(); fetchSummary(); });
+window.addEventListener("online", () => flushQueue());
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flushQueue(); });
+window.addEventListener("pagehide", () => flushQueue());
 
 $("date").value = today();
 serverTotals = read(SUM_KEY, null);
 renderStores(); renderSummary(); showPending();
-flushQueue().then(fetchSummary);
+fetchSummary();
+flushQueue();
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(console.error);
 </script>
