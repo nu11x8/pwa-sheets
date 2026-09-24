@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f7b5f">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title>シート送信メモ</title>
+<style>
+  :root { --bg:#f6f8f7; --fg:#1b2420; --card:#fff; --line:#d5ddd9; --accent:#0f7b5f; --err:#b3261e; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#121815; --fg:#e6ede9; --card:#1b2420; --line:#33403a; --accent:#3fb994; --err:#f2938d; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+    font-family: system-ui, -apple-system, "Hiragino Sans", "Yu Gothic UI", Meiryo, sans-serif;
+    padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom)); }
+  main { max-width: 480px; margin: 0 auto; }
+  h1 { font-size: 1.25rem; margin: 8px 0 16px; }
+  form { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; display:grid; gap:14px; }
+  label { display:grid; gap:6px; font-size:.9rem; }
+  input, select, textarea { font: inherit; padding:10px; border:1px solid var(--line); border-radius:8px;
+    background:var(--bg); color:var(--fg); width:100%; }
+  input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible {
+    outline:2px solid var(--accent); outline-offset:1px; }
+  button { font: inherit; font-weight:600; padding:12px; border:0; border-radius:8px; background:var(--accent); color:#fff; cursor:pointer; }
+  button:disabled { opacity:.6; cursor:default; }
+  #status { min-height:1.5em; margin:12px 2px 0; font-size:.9rem; }
+  #status.err { color:var(--err); }
+  #pending { font-size:.85rem; margin:4px 2px; opacity:.8; }
+</style>
+</head>
+<body>
+<main>
+  <h1>シートに記録する</h1>
+  <form id="form">
+    <label>日付
+      <input type="date" name="date" required>
+    </label>
+    <label>項目
+      <select name="category" required>
+        <option>食費</option><option>交通費</option><option>日用品</option><option>その他</option>
+      </select>
+    </label>
+    <label>金額（円）
+      <input type="number" name="amount" inputmode="numeric" min="0" step="1" required>
+    </label>
+    <label>メモ
+      <textarea name="memo" rows="2"></textarea>
+    </label>
+    <button type="submit" id="submit">送信</button>
+  </form>
+  <p id="status" role="status" aria-live="polite"></p>
+  <p id="pending"></p>
+</main>
+
+<script>
+// ▼ 設置時にここを書き換える ▼
+const GAS_URL = "https://script.google.com/macros/s/XXXXXXXX/exec"; // Apps Script のウェブアプリURL
+const SECRET  = "change-me";                                         // Code.gs の SECRET と同じ値
+// ▲ ここまで ▲
+
+const QUEUE_KEY = "pending-rows";
+const form = document.getElementById("form");
+const statusEl = document.getElementById("status");
+const pendingEl = document.getElementById("pending");
+const submitBtn = document.getElementById("submit");
+
+const loadQueue = () => { try { return JSON.parse(localStorage.getItem(QUEUE_KEY)) || []; } catch { return []; } };
+const saveQueue = q => localStorage.setItem(QUEUE_KEY, JSON.stringify(q));
+
+function setStatus(msg, isErr = false) {
+  statusEl.textContent = msg;
+  statusEl.className = isErr ? "err" : "";
+}
+function showPending() {
+  const n = loadQueue().length;
+  pendingEl.textContent = n ? `未送信: ${n}件（オンライン時に自動で再送します）` : "";
+}
+function today() {
+  const d = new Date();
+  return new Date(d - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+
+// 1件送信。成功で true、失敗で false
+async function postRow(row) {
+  try {
+    // Content-Type を指定しない（text/plain になる）ことで CORS プリフライトを避ける
+    const res = await fetch(GAS_URL, {
+      method: "POST",
+      body: JSON.stringify({ secret: SECRET, row })
+    });
+    const json = await res.json();
+    return json.ok === true;
+  } catch {
+    return false;
+  }
+}
+
+// 未送信分をまとめて再送
+async function flushQueue() {
+  let q = loadQueue();
+  if (!q.length || !navigator.onLine) return;
+  const rest = [];
+  for (const row of q) {
+    if (!(await postRow(row))) rest.push(row);
+  }
+  saveQueue(rest);
+  showPending();
+  if (rest.length < q.length) setStatus(`${q.length - rest.length}件の未送信データを送信しました`);
+}
+
+form.addEventListener("submit", async e => {
+  e.preventDefault();
+  const fd = new FormData(form);
+  const row = {
+    sentAt: new Date().toISOString(),
+    date: fd.get("date"),
+    category: fd.get("category"),
+    amount: Number(fd.get("amount")),
+    memo: fd.get("memo") || ""
+  };
+  submitBtn.disabled = true;
+  setStatus("送信中…");
+  const ok = navigator.onLine && await postRow(row);
+  if (ok) {
+    setStatus("送信しました");
+  } else {
+    saveQueue([...loadQueue(), row]);
+    setStatus("送信できなかったため端末に保存しました。通信が戻ると再送します", true);
+  }
+  showPending();
+  form.reset();
+  form.date.value = today();
+  submitBtn.disabled = false;
+});
+
+window.addEventListener("online", flushQueue);
+form.date.value = today();
+showPending();
+flushQueue();
+
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("sw.js").catch(console.error);
+}
+</script>
+</body>
+</html>
