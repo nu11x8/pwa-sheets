@@ -1,6 +1,7 @@
 // アプリ本体（HTML/アイコン）をキャッシュする。Apps Script への通信はキャッシュしない。
-// ネットワーク優先: オンラインなら常に最新のファイルを取得し、オフラインのときだけキャッシュを使う。
-const CACHE = "sheet-memo-v3";
+// ネットワーク優先: オンラインなら常に最新のファイルを取得し（ブラウザのHTTPキャッシュも再確認）、
+// オフラインのときだけ保存済みのキャッシュを使う。
+const CACHE = "sheet-memo-v4";
 const ASSETS = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", e => {
@@ -18,11 +19,12 @@ self.addEventListener("activate", e => {
 
 self.addEventListener("fetch", e => {
   const req = e.request;
-  if (req.method !== "GET" || new URL(req.url).origin !== location.origin) return;
+  const url = new URL(req.url);
+  // 他サイト・POST・クエリ付き（更新確認用）は素通し
+  if (req.method !== "GET" || url.origin !== location.origin || url.search) return;
   e.respondWith(
-    fetch(req).then(res => {
-      const copy = res.clone();
-      caches.open(CACHE).then(c => c.put(req, copy));
+    fetch(req, { cache: "no-cache" }).then(res => {
+      if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(req, copy)); }
       return res;
     }).catch(() => caches.match(req))
   );
