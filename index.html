@@ -50,7 +50,7 @@
   .submit { padding:14px; font-size:1rem; }
   #status { min-height:1.5em; margin:12px 2px 0; font-size:.9rem; color:var(--accent); }
   #status.err { color:var(--err); }
-  .pending-row { display:flex; align-items:center; gap:10px; min-height:2.4em; margin:4px 2px; font-size:.85rem; color:var(--muted); }
+  .pending-row { display:flex; flex-wrap:wrap; align-items:center; gap:10px; min-height:2.4em; margin:4px 2px; font-size:.85rem; color:var(--muted); }
   .pending-row .btn { padding:6px 12px; font-size:.85rem; }
   .ver { font-size:.7rem; color:var(--muted); margin:16px 2px 0; }
 </style>
@@ -98,8 +98,8 @@
     <button type="submit" class="btn submit" id="submit">送信</button>
   </form>
   <p id="status" role="status" aria-live="polite"></p>
-  <div class="pending-row"><span id="pending"></span><button type="button" class="btn sub" id="flushNow" hidden>今すぐ送信</button></div>
-  <p class="ver">app v3</p>
+  <div class="pending-row"><span id="pending"></span><button type="button" class="btn sub" id="flushNow" hidden>今すぐ送信</button><button type="button" class="btn sub" id="clearQueue" hidden>未送信を削除</button></div>
+  <p class="ver">app v5</p>
 </main>
 
 <script>
@@ -162,13 +162,21 @@ function showPending() {
   const n = loadQueue().length;
   $("pending").textContent = n ? `端末に保存中: ${n}件（未送信）` : "";
   $("flushNow").hidden = !n;
+  $("clearQueue").hidden = !n;
 }
-async function postRows(rows) {
+let lastError = "";
+async function postRows(rows, keepalive = false) {
+  lastError = "";
   try {
     // Content-Type を指定しない（text/plain）ことで CORS プリフライトを避ける
-    const res = await fetch(GAS_URL, { method: "POST", keepalive: true, body: JSON.stringify({ secret: SECRET, rows }) });
-    return (await res.json()).ok === true;
-  } catch { return false; }
+    const res = await fetch(GAS_URL, { method: "POST", keepalive, body: JSON.stringify({ secret: SECRET, rows }) });
+    const json = await res.json();
+    if (json.ok === true) return true;
+    lastError = json.error === "unauthorized" ? "SECRETがGAS側と一致しません" : String(json.error || "不明なエラー");
+  } catch {
+    lastError = "通信できないか、GASが想定外の応答を返しました（GASの更新・再デプロイとGAS_URLを確認してください）";
+  }
+  return false;
 }
 
 /* ---------- 今月の合計 ---------- */
@@ -205,7 +213,7 @@ function addToServerTotals(rows) {
 }
 
 let flushing = false;
-async function flushQueue(manual = false) {
+async function flushQueue(manual = false, keepalive = false) {
   if (flushing || !navigator.onLine) return;
   const q = loadQueue();
   if (!q.length) return;
@@ -214,7 +222,7 @@ async function flushQueue(manual = false) {
   let sent = 0;
   for (let i = 0; i < q.length; i += 50) {
     const chunk = q.slice(i, i + 50);
-    if (!(await postRows(chunk))) break;
+    if (!(await postRows(chunk, keepalive))) break;
     const ids = new Set(chunk.map(r => r.id));
     saveQueue(loadQueue().filter(r => !ids.has(r.id)));
     addToServerTotals(chunk);
@@ -223,7 +231,7 @@ async function flushQueue(manual = false) {
   flushing = false;
   showPending(); renderSummary();
   if (sent) { setStatus(`${sent}件をシートに送信しました`); fetchSummary(); }
-  else if (manual) setStatus("送信できませんでした。あとで再送します", true);
+  else if (!keepalive) setStatus("送信できませんでした: " + lastError, true);
 }
 
 /* ---------- 入力 ---------- */
@@ -244,10 +252,18 @@ $("form").addEventListener("submit", e => {
 });
 
 $("flushNow").onclick = () => flushQueue(true);
+$("clearQueue").onclick = () => {
+  if (flushing) { setStatus("送信中のため、完了してから削除してください", true); return; }
+  const n = loadQueue().length;
+  if (!n || !confirm(`未送信の${n}件を端末から削除します。シートには送信されません。よろしいですか？`)) return;
+  saveQueue([]);
+  showPending(); renderSummary();
+  setStatus(`未送信の${n}件を削除しました`);
+};
 $("date").addEventListener("change", fetchSummary);
 window.addEventListener("online", () => flushQueue());
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flushQueue(); });
-window.addEventListener("pagehide", () => flushQueue());
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flushQueue(false, true); });
+window.addEventListener("pagehide", () => flushQueue(false, true));
 
 $("date").value = today();
 serverTotals = read(SUM_KEY, null);
