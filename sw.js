@@ -1,7 +1,7 @@
 // アプリ本体（HTML/アイコン）だけをキャッシュする。
 // Apps Script への通信（POST）はキャッシュしない。
 // ファイルを更新したら CACHE のバージョンを上げること。
-const CACHE = "sheet-memo-v1";
+const CACHE = "sheet-memo-v2";
 const ASSETS = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", e => {
